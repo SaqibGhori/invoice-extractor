@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Client } from '@gradio/client'
 
 interface Invoice {
   vendor_name: string
@@ -11,7 +12,8 @@ interface Invoice {
   total: number
 }
 
-const API_URL = `${import.meta.env.VITE_API_URL ?? 'http://localhost:8000'}/extract`
+const SPACE_URL =
+  import.meta.env.VITE_SPACE_URL ?? 'https://silky779sap-invoice-extractor-api.hf.space'
 
 type Status = 'idle' | 'loading' | 'success' | 'error'
 
@@ -28,16 +30,14 @@ function App() {
     setStatus('loading')
     setError(null)
 
-    const formData = new FormData()
-    formData.append('file', file)
-
     try {
-      const res = await fetch(API_URL, { method: 'POST', body: formData })
-      if (!res.ok) {
-        const body = await res.json()
-        throw new Error(body.detail ?? 'Extraction failed')
+      const client = await Client.connect(SPACE_URL)
+      const res = await client.predict('/demo_extract', { pdf_path: file })
+      const data = (res.data as unknown[])[0] as Invoice | { error: string }
+
+      if ('error' in data) {
+        throw new Error(data.error)
       }
-      const data: Invoice = await res.json()
       setResult(data)
       setStatus('success')
     } catch (err) {
