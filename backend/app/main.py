@@ -15,7 +15,7 @@ from openai import OpenAIError
 from pydantic import ValidationError
 
 from app.extraction import extract_text_from_pdf
-from app.llm_client import extract_invoice
+from app.llm_client import extract_invoice, NotAnInvoiceError
 
 MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 MB
 
@@ -57,6 +57,11 @@ async def extract(file: UploadFile = File(...)):
 
     try:
         invoice = extract_invoice(text)
+    except NotAnInvoiceError:
+        raise HTTPException(
+            status_code=422,
+            detail="This document doesn't appear to be an invoice — please upload an actual invoice or bill",
+        )
     except ValidationError as e:
         raise HTTPException(status_code=422, detail=f"Could not extract valid invoice data: {e}")
     except OpenAIError:
