@@ -1,0 +1,15 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Secrets — never commit
+.env
+
+# Node
+node_modules/
+dist/
+
+# Local junk
+*.log
+sample_invoice.pdf
