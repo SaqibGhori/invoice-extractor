@@ -37,12 +37,38 @@ INVOICE_TOOL = {
                 },
                 "vendor_name": {"type": "string"},
                 "invoice_number": {"type": "string"},
-                "invoice_date": {"type": "string", "description": "ISO 8601 format, YYYY-MM-DD"},
-                "due_date": {"type": "string", "description": "ISO 8601 format, YYYY-MM-DD"},
-                "currency": {"type": "string", "description": "ISO 4217 currency code, e.g. USD"},
-                "subtotal": {"type": "number"},
-                "tax": {"type": "number"},
-                "total": {"type": "number"},
+                "invoice_date": {
+                    "type": "string",
+                    "description": "ISO 8601 format YYYY-MM-DD, e.g. 2026-03-20. Never use formats like 20-Mar-26.",
+                },
+                "due_date": {
+                    "type": "string",
+                    "description": "ISO 8601 format YYYY-MM-DD. Use the payment/due date shown on the invoice.",
+                },
+                "currency": {
+                    "type": "string",
+                    "description": (
+                        "ISO 4217 code of the currency the invoice totals are stated in "
+                        "(e.g. the currency named next to the total or net payable amount). "
+                        "Ignore currencies mentioned in bank-account or payment-instruction fine print."
+                    ),
+                },
+                "subtotal": {
+                    "type": "number",
+                    "description": "Amount before tax/VAT.",
+                },
+                "tax": {
+                    "type": "number",
+                    "description": "Total tax/VAT amount. Use 0 if the invoice shows no tax.",
+                },
+                "total": {
+                    "type": "number",
+                    "description": (
+                        "The final payable amount of the invoice. If the document shows a "
+                        "'Net Payable' or 'Amount Due' figure, use exactly that value — it may be "
+                        "negative for returns/credits."
+                    ),
+                },
             },
             "required": [
                 "is_invoice",
@@ -68,6 +94,7 @@ def _call_llm(invoice_text: str, retry_note: str = "") -> dict:
     response = client.chat.completions.create(
         model=MODEL,
         max_tokens=1024,
+        temperature=0,
         tools=[INVOICE_TOOL],
         tool_choice={"type": "function", "function": {"name": "record_invoice"}},
         messages=[{"role": "user", "content": prompt}],
