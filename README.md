@@ -44,8 +44,8 @@ Open http://localhost:5173.
 
 | Variable | Where | Purpose |
 |---|---|---|
-| `DO_INFERENCE_API_KEY` | backend | DigitalOcean serverless inference key |
-| `LLM_MODEL` | backend | Model ID (e.g. `llama3.3-70b-instruct`) |
+| `GROQ_API_KEY` | backend | Groq inference key |
+| `LLM_MODEL` | backend | Model ID (e.g. `llama-3.3-70b-versatile`) |
 | `FRONTEND_ORIGIN` | backend | Allowed CORS origin(s), comma-separated |
 | `VITE_API_URL` | frontend | Backend base URL (defaults to `http://localhost:8000`) |
 

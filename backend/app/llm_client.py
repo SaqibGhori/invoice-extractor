@@ -6,13 +6,18 @@ from pydantic import ValidationError
 from app.models import Invoice
 
 client = OpenAI(
-    api_key=os.environ["DO_INFERENCE_API_KEY"],
-    base_url="https://inference.do-ai.run/v1",
+    api_key=os.environ["GROQ_API_KEY"],
+    base_url="https://api.groq.com/openai/v1",
     timeout=60.0,
     max_retries=1,
 )
 
 MODEL = os.environ["LLM_MODEL"]
+
+# Groq's free tier caps requests at 8000 tokens/minute (schema + prompt + output
+# combined); ~4 chars/token, so this leaves headroom for the tool schema and the
+# 1024-token completion budget below.
+MAX_INVOICE_TEXT_CHARS = 20000
 
 class NotAnInvoiceError(Exception):
     pass
@@ -91,20 +96,27 @@ def _call_llm(invoice_text: str, retry_note: str = "") -> dict:
     if retry_note:
         prompt += f"\n\nYour previous attempt was invalid: {retry_note}\nPlease correct it."
 
-    response = client.chat.completions.create(
-        model=MODEL,
-        max_tokens=1024,
-        temperature=0,
-        tools=[INVOICE_TOOL],
-        tool_choice={"type": "function", "function": {"name": "record_invoice"}},
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    tool_calls = response.choices[0].message.tool_calls
-    if not tool_calls:
-        raise RuntimeError("Model did not return a tool call")
-
-    return json.loads(tool_calls[0].function.arguments)
+    # Groq occasionally emits a malformed tool call (documented quirk, not an
+    # outage) - one quiet retry before letting the error surface, same idea as
+    # the Pydantic-validation retry below.
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=MODEL,
+                max_tokens=1024,
+                temperature=0,
+                tools=[INVOICE_TOOL],
+                tool_choice={"type": "function", "function": {"name": "record_invoice"}},
+                messages=[{"role": "user", "content": prompt}],
+            )
+            tool_calls = response.choices[0].message.tool_calls
+            if not tool_calls:
+                raise RuntimeError("Model did not return a tool call")
+            return json.loads(tool_calls[0].function.arguments)
+        except Exception as e:
+            last_error = e
+    raise last_error
 
 
 def _to_invoice(raw: dict) -> Invoice:
@@ -113,7 +125,22 @@ def _to_invoice(raw: dict) -> Invoice:
     return Invoice(**raw)
 
 
+def _fit_to_token_budget(invoice_text: str) -> str:
+    if len(invoice_text) <= MAX_INVOICE_TEXT_CHARS:
+        return invoice_text
+    # Invoice headers (vendor, invoice #) live near the top; totals live near
+    # the bottom - keep both ends and drop the (usually line-item-heavy) middle.
+    head_chars = MAX_INVOICE_TEXT_CHARS * 2 // 3
+    tail_chars = MAX_INVOICE_TEXT_CHARS - head_chars
+    return (
+        invoice_text[:head_chars]
+        + "\n\n[... middle of document omitted for length ...]\n\n"
+        + invoice_text[-tail_chars:]
+    )
+
+
 def extract_invoice(invoice_text: str) -> Invoice:
+    invoice_text = _fit_to_token_budget(invoice_text)
     raw = _call_llm(invoice_text)
     try:
         return _to_invoice(raw)
