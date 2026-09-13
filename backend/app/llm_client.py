@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from openai import OpenAI
 from pydantic import ValidationError
 
@@ -14,10 +15,13 @@ client = OpenAI(
 
 MODEL = os.environ["LLM_MODEL"]
 
-# Groq's free tier caps requests at 8000 tokens/minute (schema + prompt + output
-# combined); ~4 chars/token, so this leaves headroom for the tool schema and the
-# 1024-token completion budget below.
+# Coarse first-pass cap before any API call. Tokens-per-char varies wildly by
+# script (Arabic/CJK can run ~1 token/char vs ~4 chars/token for English), so
+# this is just a sanity ceiling - the real fit happens in _call_llm_with_shrink,
+# which reacts to Groq's actual reported token count.
 MAX_INVOICE_TEXT_CHARS = 20000
+
+RATE_LIMIT_PATTERN = re.compile(r"Limit (\d+), Requested (\d+)")
 
 class NotAnInvoiceError(Exception):
     pass
@@ -125,25 +129,46 @@ def _to_invoice(raw: dict) -> Invoice:
     return Invoice(**raw)
 
 
-def _fit_to_token_budget(invoice_text: str) -> str:
-    if len(invoice_text) <= MAX_INVOICE_TEXT_CHARS:
-        return invoice_text
+def _truncate_middle(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
     # Invoice headers (vendor, invoice #) live near the top; totals live near
     # the bottom - keep both ends and drop the (usually line-item-heavy) middle.
-    head_chars = MAX_INVOICE_TEXT_CHARS * 2 // 3
-    tail_chars = MAX_INVOICE_TEXT_CHARS - head_chars
+    head_chars = max_chars * 2 // 3
+    tail_chars = max_chars - head_chars
     return (
-        invoice_text[:head_chars]
+        text[:head_chars]
         + "\n\n[... middle of document omitted for length ...]\n\n"
-        + invoice_text[-tail_chars:]
+        + text[-tail_chars:]
     )
 
 
+def _call_llm_with_shrink(invoice_text: str, retry_note: str = "") -> dict:
+    text = invoice_text
+    last_error: Exception | None = None
+    for _ in range(3):
+        try:
+            return _call_llm(text, retry_note=retry_note)
+        except Exception as e:
+            match = RATE_LIMIT_PATTERN.search(str(e))
+            if not match:
+                raise
+            limit, requested = int(match.group(1)), int(match.group(2))
+            # 0.85 safety margin: the retry's own overhead (prompt wrapper,
+            # tool schema) isn't part of this ratio, so undershoot a bit.
+            new_len = max(1000, int(len(text) * (limit / requested) * 0.85))
+            if new_len >= len(text):
+                raise
+            text = _truncate_middle(text, new_len)
+            last_error = e
+    raise last_error
+
+
 def extract_invoice(invoice_text: str) -> Invoice:
-    invoice_text = _fit_to_token_budget(invoice_text)
-    raw = _call_llm(invoice_text)
+    invoice_text = _truncate_middle(invoice_text, MAX_INVOICE_TEXT_CHARS)
+    raw = _call_llm_with_shrink(invoice_text)
     try:
         return _to_invoice(raw)
     except ValidationError as e:
-        raw_retry = _call_llm(invoice_text, retry_note=str(e))
+        raw_retry = _call_llm_with_shrink(invoice_text, retry_note=str(e))
         return _to_invoice(raw_retry)
